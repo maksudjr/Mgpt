@@ -16,7 +16,11 @@ import {
   Bot,
   Loader2,
   FileText,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Mic,
+  MicOff,
+  Sun,
+  Moon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
@@ -29,17 +33,23 @@ export default function App() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [input, setInput] = useState('');
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load sessions from localStorage
   useEffect(() => {
+    const savedTheme = localStorage.getItem('maksud_ai_theme') as 'dark' | 'light';
+    if (savedTheme) setTheme(savedTheme);
+
     const saved = localStorage.getItem('maksud_ai_chats');
     if (saved) {
       try {
@@ -61,12 +71,80 @@ export default function App() {
 
   // Save sessions to localStorage
   useEffect(() => {
-    localStorage.setItem('maksud_ai_chats', JSON.stringify(sessions));
+    try {
+      localStorage.setItem('maksud_ai_chats', JSON.stringify(sessions));
+    } catch (e) {
+      console.error('LocalStorage quota exceeded, clearing old chats');
+      if (sessions.length > 10) {
+        setSessions(prev => prev.slice(0, 10));
+      }
+    }
   }, [sessions]);
 
-  // Auto-scroll to bottom
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    localStorage.setItem('maksud_ai_theme', theme);
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [theme]);
+
+  // Speech Recognition Setup
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = true;
+      recognitionRef.current.interimResults = true;
+
+      recognitionRef.current.onresult = (event: any) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          } else {
+            interimTranscript += event.results[i][0].transcript;
+          }
+        }
+        
+        if (finalTranscript) {
+          setInput(prev => prev + (prev ? ' ' : '') + finalTranscript);
+        }
+      };
+
+      recognitionRef.current.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current.onerror = (event: any) => {
+        console.error('Speech recognition error', event.error);
+        setIsListening(false);
+      };
+    }
+  }, []);
+
+  const toggleListening = () => {
+    if (isListening) {
+      recognitionRef.current?.stop();
+    } else {
+      try {
+        recognitionRef.current?.start();
+        setIsListening(true);
+      } catch (e) {
+        console.error('Failed to start speech recognition', e);
+      }
+    }
+  };
+
+  // Auto-scroll to bottom with debounce/throttle or just simpler logic
+  useEffect(() => {
+    if (chatEndRef.current) {
+      const scrollOptions: ScrollIntoViewOptions = { behavior: 'auto' }; // 'auto' is faster than 'smooth'
+      chatEndRef.current.scrollIntoView(scrollOptions);
+    }
   }, [sessions, currentSessionId, isTyping]);
 
   const currentSession = sessions.find(s => s.id === currentSessionId);
@@ -94,30 +172,39 @@ export default function App() {
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    e.preventDefault();
     const files = e.target.files;
     if (!files) return;
 
+    const newAttachments: Attachment[] = [];
+    
     for (const file of Array.from(files)) {
       const reader = new FileReader();
       
-      if (file.type.startsWith('image/')) {
-        reader.onload = (event) => {
-          const url = event.target?.result as string;
-          setAttachments(prev => [...prev, { name: file.name, type: file.type, url }]);
-        };
-        reader.readAsDataURL(file);
-      } else if (file.type === 'text/plain' || file.name.endsWith('.txt')) {
-        reader.onload = (event) => {
-          const content = event.target?.result as string;
-          setAttachments(prev => [...prev, { name: file.name, type: file.type, url: '', content }]);
-        };
-        reader.readAsText(file);
-      } else if (file.type === 'application/pdf') {
-        // For PDF, in a real app we'd use a library like pdf.js
-        // Here we'll just show it as an attachment placeholder
-        setAttachments(prev => [...prev, { name: file.name, type: file.type, url: '', content: '[PDF Content Placeholder]' }]);
-      }
+      const promise = new Promise<void>((resolve) => {
+        if (file.type.startsWith('image/')) {
+          reader.onload = (event) => {
+            const url = event.target?.result as string;
+            newAttachments.push({ name: file.name, type: file.type, url });
+            resolve();
+          };
+          reader.readAsDataURL(file);
+        } else if (file.type === 'text/plain' || file.name.endsWith('.txt')) {
+          reader.onload = (event) => {
+            const content = event.target?.result as string;
+            newAttachments.push({ name: file.name, type: file.type, url: '', content });
+            resolve();
+          };
+          reader.readAsText(file);
+        } else {
+          newAttachments.push({ name: file.name, type: file.type, url: '', content: `[${file.type} Placeholder]` });
+          resolve();
+        }
+      });
+      await promise;
     }
+    
+    setAttachments(prev => [...prev, ...newAttachments]);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -225,7 +312,10 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen bg-[#0a0a0a] text-white overflow-hidden">
+    <div className={cn(
+      "flex h-screen overflow-hidden transition-colors duration-300",
+      theme === 'dark' ? "bg-[#0a0a0a] text-white" : "bg-white text-gray-900"
+    )}>
       {/* Sidebar */}
       <AnimatePresence mode="wait">
         {isSidebarOpen && (
@@ -235,15 +325,22 @@ export default function App() {
             exit={{ x: -300, opacity: 0 }}
             transition={{ type: 'spring', damping: 20, stiffness: 100 }}
             className={cn(
-              "fixed inset-y-0 left-0 z-50 w-72 bg-[#111] border-r border-[#222] flex flex-col",
-              "md:relative md:translate-x-0"
+              "fixed inset-y-0 left-0 z-50 w-72 flex flex-col shadow-2xl transition-colors duration-300",
+              theme === 'dark' ? "bg-[#111] border-r border-[#222]" : "bg-gray-50 border-r border-gray-200",
+              "md:relative md:translate-x-0",
+              !isSidebarOpen && "hidden md:hidden"
             )}
           >
             <div className="p-4">
               <button
                 type="button"
                 onClick={createNewChat}
-                className="w-full flex items-center gap-3 px-4 py-3 bg-[#1e1e1e] hover:bg-[#2a2a2a] border border-[#333] rounded-lg transition-all text-sm font-medium"
+                className={cn(
+                  "w-full flex items-center gap-3 px-4 py-3 border rounded-lg transition-all text-sm font-medium",
+                  theme === 'dark' 
+                    ? "bg-[#1e1e1e] hover:bg-[#2a2a2a] border-[#333]" 
+                    : "bg-white hover:bg-gray-100 border-gray-200 shadow-sm"
+                )}
               >
                 <Plus size={18} />
                 New Chat
@@ -263,7 +360,9 @@ export default function App() {
                   }}
                   className={cn(
                     "group flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-colors text-sm",
-                    currentSessionId === session.id ? "bg-[#222] text-white" : "text-gray-400 hover:bg-[#1a1a1a] hover:text-gray-200"
+                    currentSessionId === session.id 
+                      ? (theme === 'dark' ? "bg-[#222] text-white" : "bg-gray-200 text-gray-900")
+                      : (theme === 'dark' ? "text-gray-400 hover:bg-[#1a1a1a] hover:text-gray-200" : "text-gray-600 hover:bg-gray-100 hover:text-gray-900")
                   )}
                 >
                   <MessageSquare size={16} className="shrink-0" />
@@ -279,9 +378,9 @@ export default function App() {
               ))}
             </div>
 
-            <div className="p-4 border-t border-[#222]">
-              <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[#1a1a1a]">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center font-bold text-xs">
+            <div className={cn("p-4 border-t", theme === 'dark' ? "border-[#222]" : "border-gray-200")}>
+              <div className={cn("flex items-center gap-3 px-3 py-2 rounded-lg", theme === 'dark' ? "bg-[#1a1a1a]" : "bg-gray-100")}>
+                <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center font-bold text-xs text-white">
                   M
                 </div>
                 <div className="flex-1 min-w-0">
@@ -298,20 +397,37 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-1 flex flex-col relative min-w-0">
         {/* Header */}
-        <header className="h-14 border-b border-[#222] flex items-center justify-between px-4 bg-[#0a0a0a]/80 backdrop-blur-md sticky top-0 z-40">
+        <header className={cn(
+          "h-14 border-b flex items-center justify-between px-4 backdrop-blur-md sticky top-0 z-40 transition-colors duration-300",
+          theme === 'dark' ? "bg-[#0a0a0a]/80 border-[#222]" : "bg-white/80 border-gray-200"
+        )}>
           <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-              className="p-2 hover:bg-[#1a1a1a] rounded-lg transition-colors"
+              className={cn(
+                "p-2 rounded-lg transition-colors",
+                theme === 'dark' ? "hover:bg-[#1a1a1a]" : "hover:bg-gray-100"
+              )}
             >
-              <Menu size={20} />
+              <MoreVertical size={20} />
             </button>
             <h1 className="font-semibold text-lg tracking-tight">
               Maksud <span className="text-blue-500">Intelligent AI</span>
             </h1>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              className={cn(
+                "p-2 rounded-lg transition-all",
+                theme === 'dark' ? "hover:bg-[#1a1a1a] text-yellow-400" : "hover:bg-gray-100 text-blue-600"
+              )}
+              title={theme === 'dark' ? "Switch to Light Mode" : "Switch to Dark Mode"}
+            >
+              {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
+            </button>
           </div>
         </header>
 
@@ -319,34 +435,6 @@ export default function App() {
         <div className="flex-1 overflow-y-auto overflow-x-hidden">
           {!currentSession || currentSession.messages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center p-8 text-center">
-              <motion.div
-                initial={{ scale: 0.8, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mb-6 shadow-2xl shadow-blue-500/20"
-              >
-                <Bot size={32} className="text-white" />
-              </motion.div>
-              <h2 className="text-2xl font-bold mb-2">How can I help you today?</h2>
-              <p className="text-gray-500 max-w-md mb-8">
-                Maksud Intelligent AI can help you with writing, coding, learning, or just having a friendly conversation.
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-2xl w-full">
-                {[
-                  "Write a professional email",
-                  "Explain quantum physics",
-                  "Help me with a React bug",
-                  "Create a workout plan"
-                ].map((suggestion, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => setInput(suggestion)}
-                    className="p-4 bg-[#111] hover:bg-[#1a1a1a] border border-[#222] rounded-xl text-sm text-left transition-all"
-                  >
-                    {suggestion}
-                  </button>
-                ))}
-              </div>
             </div>
           ) : (
             <div className="max-w-3xl mx-auto py-8 px-4 space-y-8">
@@ -360,7 +448,9 @@ export default function App() {
                 >
                   <div className={cn(
                     "w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-1",
-                    message.role === 'user' ? "bg-blue-600" : "bg-[#1a1a1a] border border-[#333]"
+                    message.role === 'user' 
+                      ? "bg-blue-600 text-white" 
+                      : (theme === 'dark' ? "bg-[#1a1a1a] border border-[#333]" : "bg-gray-100 border border-gray-200")
                   )}>
                     {message.role === 'user' ? <User size={16} /> : <Bot size={16} className="text-blue-500" />}
                   </div>
@@ -372,8 +462,8 @@ export default function App() {
                     <div className={cn(
                       "px-4 py-3 rounded-2xl text-sm leading-relaxed",
                       message.role === 'user' 
-                        ? "bg-[#1e1e1e] text-white rounded-tr-none" 
-                        : "bg-transparent text-gray-200"
+                        ? (theme === 'dark' ? "bg-[#1e1e1e] text-white rounded-tr-none" : "bg-blue-50 text-gray-900 rounded-tr-none border border-blue-100")
+                        : "bg-transparent"
                     )}>
                       {message.attachments && message.attachments.length > 0 && (
                         <div className="flex flex-wrap gap-2 mb-3">
@@ -383,11 +473,17 @@ export default function App() {
                                 <img 
                                   src={att.url} 
                                   alt={att.name} 
-                                  className="max-w-[200px] max-h-[200px] rounded-lg border border-[#333] object-cover"
+                                  className={cn(
+                                    "max-w-[200px] max-h-[200px] rounded-lg border object-cover",
+                                    theme === 'dark' ? "border-[#333]" : "border-gray-200"
+                                  )}
                                   referrerPolicy="no-referrer"
                                 />
                               ) : (
-                                <div className="flex items-center gap-2 px-3 py-2 bg-[#2a2a2a] rounded-lg border border-[#333] text-xs">
+                                <div className={cn(
+                                  "flex items-center gap-2 px-3 py-2 rounded-lg border text-xs",
+                                  theme === 'dark' ? "bg-[#2a2a2a] border-[#333]" : "bg-gray-50 border-gray-200"
+                                )}>
                                   <FileText size={14} className="text-blue-400" />
                                   <span className="truncate max-w-[120px]">{att.name}</span>
                                 </div>
@@ -434,7 +530,12 @@ export default function App() {
         </div>
 
         {/* Input Area */}
-        <div className="p-4 md:p-6 bg-gradient-to-t from-[#0a0a0a] via-[#0a0a0a] to-transparent">
+        <div className={cn(
+          "p-4 md:p-6 transition-colors duration-300",
+          theme === 'dark' 
+            ? "bg-gradient-to-t from-[#0a0a0a] via-[#0a0a0a] to-transparent" 
+            : "bg-gradient-to-t from-white via-white to-transparent"
+        )}>
           <div className="max-w-3xl mx-auto">
             {/* Attachment Previews */}
             <AnimatePresence>
@@ -448,11 +549,14 @@ export default function App() {
                   {attachments.map((att, i) => (
                     <div key={i} className="relative group">
                       {att.type.startsWith('image/') ? (
-                        <div className="w-16 h-16 rounded-lg overflow-hidden border border-[#333]">
+                        <div className={cn("w-16 h-16 rounded-lg overflow-hidden border", theme === 'dark' ? "border-[#333]" : "border-gray-200")}>
                           <img src={att.url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                         </div>
                       ) : (
-                        <div className="flex items-center gap-2 px-3 py-2 bg-[#1a1a1a] rounded-lg border border-[#333] text-xs">
+                        <div className={cn(
+                          "flex items-center gap-2 px-3 py-2 rounded-lg border text-xs",
+                          theme === 'dark' ? "bg-[#1a1a1a] border-[#333]" : "bg-gray-50 border-gray-200"
+                        )}>
                           <FileText size={14} className="text-blue-400" />
                           <span className="truncate max-w-[100px]">{att.name}</span>
                         </div>
@@ -470,7 +574,10 @@ export default function App() {
               )}
             </AnimatePresence>
 
-            <div className="relative flex items-end gap-2 bg-[#1a1a1a] border border-[#333] rounded-2xl p-2 focus-within:border-blue-500/50 transition-colors shadow-xl">
+            <div className={cn(
+              "relative flex items-end gap-2 border rounded-2xl p-2 focus-within:border-blue-500/50 transition-all shadow-xl",
+              theme === 'dark' ? "bg-[#1a1a1a] border-[#333]" : "bg-white border-gray-200"
+            )}>
               <input
                 type="file"
                 ref={fileInputRef}
@@ -481,10 +588,30 @@ export default function App() {
               />
               <button
                 type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="p-2.5 text-gray-400 hover:text-white hover:bg-[#222] rounded-xl transition-all"
+                onClick={(e) => {
+                  e.preventDefault();
+                  fileInputRef.current?.click();
+                }}
+                className={cn(
+                  "p-2.5 rounded-xl transition-all",
+                  theme === 'dark' ? "text-gray-400 hover:text-white hover:bg-[#222]" : "text-gray-500 hover:text-gray-900 hover:bg-gray-100"
+                )}
               >
                 <Paperclip size={20} />
+              </button>
+
+              <button
+                type="button"
+                onClick={toggleListening}
+                className={cn(
+                  "p-2.5 rounded-xl transition-all",
+                  isListening 
+                    ? "bg-red-500 text-white animate-pulse" 
+                    : (theme === 'dark' ? "text-gray-400 hover:text-white hover:bg-[#222]" : "text-gray-500 hover:text-gray-900 hover:bg-gray-100")
+                )}
+                title={isListening ? "Stop Listening" : "Start Voice Typing"}
+              >
+                {isListening ? <MicOff size={20} /> : <Mic size={20} />}
               </button>
               
               <textarea
@@ -497,7 +624,10 @@ export default function App() {
                   }
                 }}
                 placeholder="Message Maksud AI..."
-                className="flex-1 bg-transparent border-none focus:ring-0 resize-none py-2.5 px-2 text-sm max-h-40 min-h-[40px]"
+                className={cn(
+                  "flex-1 bg-transparent border-none focus:ring-0 resize-none py-2.5 px-2 text-sm max-h-40 min-h-[40px]",
+                  theme === 'dark' ? "text-white placeholder-gray-500" : "text-gray-900 placeholder-gray-400"
+                )}
                 rows={1}
                 style={{ height: 'auto' }}
                 onInput={(e) => {
@@ -515,7 +645,7 @@ export default function App() {
                   "p-2.5 rounded-xl transition-all",
                   input.trim() || attachments.length > 0
                     ? "bg-blue-600 text-white hover:bg-blue-500"
-                    : "bg-[#222] text-gray-600 cursor-not-allowed"
+                    : (theme === 'dark' ? "bg-[#222] text-gray-600 cursor-not-allowed" : "bg-gray-100 text-gray-400 cursor-not-allowed")
                 )}
               >
                 {isTyping ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}

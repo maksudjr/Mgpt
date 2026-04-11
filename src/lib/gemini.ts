@@ -1,52 +1,31 @@
-import { GoogleGenAI } from "@google/genai";
 import { Message } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
-
 export async function* streamChatResponse(messages: Message[], systemInstruction?: string) {
-  const model = "gemini-3-flash-preview";
-  
-  const history = messages.slice(0, -1).map(msg => ({
-    role: msg.role === 'user' ? 'user' : 'model',
-    parts: [{ text: msg.content }]
-  }));
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ messages, systemInstruction }),
+    });
 
-  const lastMessage = messages[messages.length - 1];
-  
-  // Prepare parts for the last message (including attachments if any)
-  const parts: any[] = [{ text: lastMessage.content }];
-  
-  if (lastMessage.attachments) {
-    for (const attachment of lastMessage.attachments) {
-      if (attachment.type.startsWith('image/')) {
-        const base64Data = attachment.url.split(',')[1];
-        parts.push({
-          inlineData: {
-            mimeType: attachment.type,
-            data: base64Data
-          }
-        });
-      } else if (attachment.content) {
-        // For text-based files, we append the content to the text part
-        parts[0].text += `\n\n[File Content from ${attachment.name}]:\n${attachment.content}`;
-      }
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || "Failed to fetch from server");
     }
-  }
 
-  const responseStream = await ai.models.generateContentStream({
-    model,
-    contents: [
-      ...history,
-      { role: 'user', parts }
-    ],
-    config: {
-      systemInstruction: systemInstruction || "You are Maksud Intelligent AI, a helpful and friendly AI assistant. Provide clear, concise, and accurate information.",
-    }
-  });
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No reader available");
 
-  for await (const chunk of responseStream) {
-    if (chunk.text) {
-      yield chunk.text;
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      yield decoder.decode(value, { stream: true });
     }
+  } catch (error) {
+    console.error("Stream error:", error);
+    yield "Error: " + (error instanceof Error ? error.message : "Failed to connect to AI server. Please make sure GEMINI_API_KEY is set in your environment variables.");
   }
 }

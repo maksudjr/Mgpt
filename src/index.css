@@ -7,12 +7,23 @@
 
 @layer base {
   :root {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
+    --background: #ffffff;
+    --foreground: #0a0a0a;
+    --card: #f9f9f9;
+    --border: #e5e5e5;
+    --muted: #737373;
+  }
+
+  .dark {
+    --background: #0a0a0a;
+    --foreground: #ffffff;
+    --card: #111111;
+    --border: #222222;
+    --muted: #525252;
   }
 
   body {
-    @apply bg-[#0a0a0a] text-white font-sans antialiased;
+    @apply bg-[var(--background)] text-[var(--foreground)] font-sans antialiased transition-colors duration-300;
   }
 }
 
@@ -35,7 +46,7 @@
 }
 
 .markdown-body {
-  @apply text-sm leading-relaxed;
+  @apply text-sm leading-relaxed text-[var(--foreground)];
 }
 
 .markdown-body p {
@@ -43,11 +54,11 @@
 }
 
 .markdown-body code {
-  @apply bg-[#1e1e1e] px-1.5 py-0.5 rounded font-mono text-xs;
+  @apply bg-[var(--card)] px-1.5 py-0.5 rounded font-mono text-xs border border-[var(--border)];
 }
 
 .markdown-body pre {
-  @apply bg-[#1e1e1e] p-4 rounded-lg my-4 overflow-x-auto border border-[#333];
+  @apply bg-[var(--card)] p-4 rounded-lg my-4 overflow-x-auto border border-[var(--border)];
 }
 
 .markdown-body pre code {
